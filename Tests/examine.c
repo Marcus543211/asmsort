@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#define PRINT_CONST(C) printf(#C ": 0x%x\n", C)
+
 int main() {
     printf("About stat from stat and fstat\n");
     printf("stat size: %lu\n", sizeof(struct stat));
@@ -17,17 +19,17 @@ int main() {
     printf("\n");
     
     printf("For mmap\n");
-    printf("PROT_READ: %x\n", PROT_READ);
-    printf("PROT_WRITE: %x\n", PROT_WRITE);
-    printf("MAP_PRIVATE: %x\n", MAP_PRIVATE);
-    printf("MAP_ANONYMOUS: %x\n", MAP_ANONYMOUS);
-    printf("MAP_POPULATE: %x\n", MAP_POPULATE);
+    PRINT_CONST(PROT_READ);
+    PRINT_CONST(PROT_WRITE);
+    PRINT_CONST(MAP_PRIVATE);
+    PRINT_CONST(MAP_ANONYMOUS);
+    PRINT_CONST(MAP_POPULATE);
     printf("\n");
 
     printf("For clone\n");
-    printf("CLONE_VM: %x\n", CLONE_VM);
-    printf("SIGCHLD: %x\n", SIGCHLD);
-    printf("__WCLONE: %x\n", __WCLONE);
+    PRINT_CONST(CLONE_VM);
+    PRINT_CONST(SIGCHLD);
+    PRINT_CONST(__WCLONE);
     printf("\n");
 
     return 0;
