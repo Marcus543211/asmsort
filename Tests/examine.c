@@ -32,6 +32,12 @@ int main() {
     PRINT_CONST(__WCLONE);
     printf("\n");
 
+    printf("For waitid\n");
+    PRINT_CONST(P_ALL);
+    PRINT_CONST(WEXITED);
+    PRINT_CONST(__WCLONE);
+    printf("\n");
+
     return 0;
 }
 
