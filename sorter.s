@@ -204,8 +204,8 @@ move_num:
 
     movq $0, %rcx # Resets our counter
     movq $count_array, %r11 # Moves address of our array to %r11 for use in future
-    movq %rbx, %rax # Calculate pair count
-    shrq $1, %rax # Count of numbers divided by 2
+    movq %rbx, %r8 # Calculate pair count
+    shrq $1, %r8 # Count of numbers divided by 2
 
 move_loop:
 
@@ -218,7 +218,7 @@ move_loop:
     # We need to subtract 1 from the relevant index in our counting array to compensate for duplicates 
     subq $1, (%r11, %r10, 4)
     addq $1, %rcx # Increment our counter
-    cmpq %rcx, %rax # Checks if we're done with our y coordinates
+    cmpq %rcx, %r8 # Checks if we're done with our y coordinates
     jne move_loop
 
 exit:
