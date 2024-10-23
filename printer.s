@@ -1,6 +1,5 @@
 .section .data
 stat_buffer: .space 144
-count_array: .space 32768 * 4
 
 .section .text
 .globl _start
@@ -114,112 +113,12 @@ end_of_number:
     # We've also just ended a number so %ax is free.
     jg start_of_number
 
-    # At this point:
-    # %r13 = file size, %r14 = buffer, %r15 = mmap'ed file
-    # %rbx = count of numbers (not pairs)
-
-    # For sorting read from buffer
-    # Write to mmap'ed file (%r15) (don't need it anymore (being mean))
-
-
-sort_start:
-    # Here we get ready to do the accual sorting
-    movq $0, %rcx # Resets our counter
-    movq $count_array, %r11 # Moves address of our array to %r11 for use in future
-count_start:
-
-    # Counts the numbers in our input and adds 1 to the relevant indexes in our counting array
-
-    movzwq 2(%r14, %rcx, 4), %r8 # Moves a y cordinate to %r8. We find the two bytes at %r14 + %rcx * 4 + 2
-    addl $1, (%r11, %r8, 4) # Increments our index corresponding to the y value we just read 
-    #movq (%r11, %r8, 2), %r9 # Test to see if counting correctlly
-    addq $1, %rcx # Increments our counter
-    movq %rcx, %rax # Copies our counter to rax to make calculations on
-    imulq $2, %rax # We need to mult rax by 2 to make sure we follow our scala
-    cmpq %rax, %rbx # Checks if we're done with the file
-    # cmpq arg1, arg2 = arg2 - arg1
-    jg count_start # Goes to start of loop if we're not done with the file
-count_sum:
-
-    # Takes all the indexes in our array and adds them with the previous exept for the first
-    # We have the length of our array, that being 32767 so we can just loop until our counter reaches that number
-    movq $0, %rcx # Readies our counter for the summation
-    
-loop_sum:
-    #Tag tal ud i seperate registre
-    #Lig dem sammen
-    #Put tilbage i relevante register
-    
-    addq $1, %rcx # Increments our counter. We start at 0 so it's fine
-
-    movl (%r11, %rcx, 4), %r8d # Moves the number we need to add to %r12
-    movl -4(%r11, %rcx, 4), %r9d # Moves the number in the previous index to %r11
-    addl %r8d, %r9d # Adds the numbers
-    movl %r9d, (%r11, %rcx, 4) # Moves the added number to the relevenat index 
-
-    # addl -4(%r11, %rcx, 4), (%r11, %rcx, 4) # Might work, Might not
-
-    cmpq $32767, %rcx   # Checks if were done
-
-    jne loop_sum
-
-    # Calculate how much space we need
-    movq %rbx, %r8
-    shlq $1, %r8 # Multiply by two
-
-    # Allocate more space with mmap
-    movq $9, %rax # mmap syscall
-    movq $0, %rdi # let the kernel choose the address
-    movq %r8, %rsi # Allocate space for all numbers
-    movq $0b11, %rdx # Flags for PROT_READ, PROT_WRITE
-    # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
-    movq $0x8022, %r10
-    movq $-1, %r8 # The connected file (none)
-    movq $0, %r9 # The offset (don't care)
-    syscall
-
-    # TODO: Unmap the file
-    # We don't need the file anymore so save the allocated address in %r15
-    movq %rax, %r15
-
-move_num:
-    # Now that we counted our numbers and summed we need to place the numbers in a sorted way
-    # We do this by looking at the numbers in our input from the start again and checking where in our output they need to go
+    # Move the count of numbers
+    movq %rbx, %r12
 
     # At this point:
+    # %r12 = count of numbers (not pairs)
     # %r13 = file size, %r14 = buffer, %r15 = mmap'ed file
-    # %rbx = count of numbers (not pairs)
-
-    # For sorting read from buffer
-    # Write to mmap'ed file (%r15) (don't need it anymore (being mean))
-
-    # Read the y in input
-    # Check the number in our count array to get where our y needs to go
-    #Put the y cordinate into the right spot in our output array
-
-    # movq %rbx, %rax
-    # movq $2, %rcx
-    # div %rcx
-    # movq %rax, %r8 # makes %r8 how many y coordinates we have
-
-    movq $0, %rcx # Resets our counter
-    movq $count_array, %r11 # Moves address of our array to %r11 for use in future
-    movq %rbx, %r8 # Calculate pair count
-    shrq $1, %r8 # Count of numbers divided by 2
-
-move_loop:
-
-    # %r10 = y coordinate we're looking at. %r9 = The index at which y needs to be incerted. %r12 = Both the x and y coordinates we need to move
-
-    movzwq 2(%r14, %rcx, 4), %r10 # Moves a y cordinate to %r10. We find the two bytes at %r14 + %rcx * 4 + 2
-    movl (%r11, %r10, 4), %r9d # Look at our counting array for where the y needs to go
-    movl (%r14, %rcx, 4), %r12d # Moves both our X AND Y coordinates to %r12 contrary to before where we only had y
-    movl %r12d, -4(%r15, %r9, 4) # Moves our coordinates to the index we got from %r9 minus one
-    # We need to subtract 1 from the relevant index in our counting array to compensate for duplicates 
-    subq $1, (%r11, %r10, 4)
-    addq $1, %rcx # Increment our counter
-    cmpq %rcx, %r8 # Checks if we're done with our y coordinates
-    jne move_loop
 
     # Just for testing
     # Allocate space with mmap
@@ -234,10 +133,6 @@ move_loop:
     syscall
 
     movq %rax, %r11
-
-    # Fix to make it print what is sorted
-    movq %r15, %r14 # Move the sorted pointer
-    movq %rbx, %r12 # Move the count of numbers
 
     # Printing time!
 .macro write_digit
@@ -278,6 +173,7 @@ print:
     movq %r11, %rsi
     movq %r13, %rdx
     syscall
+
 exit:
     # Exit
     movq $60, %rax
