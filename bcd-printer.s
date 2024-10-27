@@ -84,22 +84,20 @@ _start:
     # The loop is unrolled for performance.
     # This macro helps bring down the repetition.
 .macro parse_digit # !!!
-    movzbq (%rbx, %rcx), %r8 # Read the next byte (zero extending)
+    movzbq (%r15, %rcx), %r8 # Read the next byte (zero extending)
+    addq $1, %rcx # Increase counter
     subq $48, %r8 # Convert the ASCII digit to its value
     js end_of_number # Jump if sign is negative (\n or \t)
-    addq $1, %rcx # Increase counter
     shlq $4, %rax # Move 4 bits
     addq %r8, %rax # Add the new digit
 .endm
 
-    movq %r15, %rbx # Start of number in file
-    movq $0, %rcx # Digit count in file
-    leaq (%r15, %r13), %rdi # End of file
+    movq $0, %rcx # File counter
     movq $0, %rdx # Result counter
-.align 4
+.align 16
 start_of_number:
-    movzbq (%rbx), %rax # Next digit into %rax, clearing it
-    movq $1, %rcx
+    movzbq (%r15, %rcx), %rax # Next digit into %rax, clearing it
+    addq $1, %rcx
     subq $48, %rax # Convert from ASCII to value
     parse_digit # 2nd digit
     parse_digit # 3rd digit
@@ -107,23 +105,18 @@ start_of_number:
     parse_digit # 5th digit
     # We can safely assume the next char is \t or \n since
     # no number is longer than 5 digits (max 32767).
-end_of_number:
-    # Save the count of digits in the lower byte
-    shlq $8, %rax
-    addq %rcx, %rax
-    # Save the number
-    #movl %eax, (%r14, %rdx, 4)
-    movntil %eax, (%r14, %rdx, 4)
     addq $1, %rcx # Count the \t or \n
-    addq %rcx, %rbx
+    # Normally when jumping it has been counted
+end_of_number:
+    movntil %eax, (%r14, %rdx, 4)
+    #movl %eax, (%r14, %rdx, 4)
     addq $1, %rdx # Increase the counter
     # Have we read the entire file?
     # We only check here since a well formatted file will ends with \n
-    cmpq %rbx, %rdi
+    cmpq %rcx, %r13
     # We just read a tab or newline so the next character must be a digit.
     # We've also just ended a number so %ax is free.
     jg start_of_number
-end_parsing:
 
     # Move the count of numbers
     movq %rdx, %r12
@@ -136,13 +129,9 @@ end_parsing:
     movq %r12, %rbx
     shlq $2, %rbx # Count of numbers * 4 bytes
 
-    # Allow us to write a little bit in front of the start
-    movq %r13, %rbx
-    addq $16, %rbx
-
     movq $9, %rax # mmap syscall
     movq $0, %rdi # let the kernel choose the address
-    movq %rbx, %rsi # Allocate the filesize
+    movq %r13, %rsi # Allocate the filesize
     movq $0b11, %rdx # Flags for PROT_READ, PROT_WRITE
     # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
     movq $0x8022, %r10
@@ -154,40 +143,24 @@ end_parsing:
 
     # Printing time!
 .macro write_digit
-    movb %al, %dl
-    addq $1, %rdi
+    movq %rax, %rdx
+    andq $0xf, %rdx
+    addq $48, %rdx
+    movb %dl, (%r9) # Write next digit
+    subq $1, %r9
     shrq $4, %rax
-    jz write_num_write
-    shlq $8, %rdx
-.endm
-
-.macro show_num size
-    .rept (\size - 1)
-    movb %al, %dl
-    shrq $4, %rax
-    shlq $8, %rdx
-    .endr
-    movb %al, %dl
-    shrq $4, %rax
-
-    andq %rdi, %rdx
-    addq %rsi, %rdx
-    shlq $(64-8*\size), %rdx
-    movq %rdx, -7(%r9)
-    subq $\size, %r9
-    jmp write_num
+    je write_num
 .endm
 
     # We iterate backwards over the numbers
     movq %r12, %r8 # Number counter
-    leaq -1(%r11, %rbx), %r9 # Output pointer
-    movabsq $0x0F0F0F0F0F0F0F0F, %rdi
-    movabsq $0x0000003030303030, %rsi
-.align 4
+    leaq -1(%r11, %r13), %r9 # Output pointer
+.align 16
 write_num:
     subq $1, %r8 # Have we written all numbers?
     jl end_writing
-    # Write either \n or \t
+    #xor %rax, %rax
+    movl (%r14, %r8, 4), %eax
     testq $1, %r8 # Is even?
     jz tab # Jump if even
     movb $'\n', (%r9)
@@ -196,45 +169,17 @@ tab:
     movb $'\t', (%r9)
 end_seperator:
     subq $1, %r9
-    # Read number
-    xorq %rax, %rax
-    movl (%r14, %r8, 4), %eax
-    # Extract count of digits
-    movzbq %al, %rbx
-    shrq $8, %rax
-    # Jump correctly
-    cmpq $5, %rbx
-    je digits_5
-    cmpq $4, %rbx
-    je digits_4
-    cmpq $3, %rbx
-    je digits_3
-    cmpq $2, %rbx
-    je digits_2
-    cmpq $1, %rbx
-    je digits_1
-.align 4
-digits_5:
-    show_num 5
-.align 4
-digits_4:
-    show_num 4
-.align 4
-digits_3:
-    show_num 3
-.align 4
-digits_2:
-    show_num 2
-.align 4
-digits_1:
-    show_num 1
+    write_digit # 1
+    write_digit # 2
+    write_digit # 3
+    write_digit # 4
+    write_digit # 5
 end_writing:
-    addq $1, %r9
 
 print:
     movq $1, %rax
     movq $1, %rdi
-    movq %r9, %rsi
+    movq %r11, %rsi
     movq %r13, %rdx
     syscall
 
