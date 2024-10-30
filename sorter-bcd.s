@@ -180,25 +180,46 @@ end_of_number:
     jg start_of_number
 end_parsing:
 
-    # Move the count of numbers
-    movq %rdx, %r12
-
-    # At this point:
-    # %r12 = count of numbers (not pairs)
-    # %r13 = file size, %r14 = buffer, %r15 = mmap'ed file
+    # Calculate the count of pairs
+    movq %rdx, %r12      # Count of numbers
+    shrq $1, %r12        # Divided by 2
 
     # Sorting!
-    movq $0, %rcx
-    movq %r12, %r10
-    shrq $1, %r10 # Count of pairs
+
+    # For counting sort we need a buffer to write into
+    # Calculate the actual needed amount of memory
+    movq %r12, %rbx      # Move count of pairs
+    shlq $3, %rbx        # Count of pairs * 8 bytes
+
+    movq $9, %rax        # mmap syscall
+    movq $0, %rdi        # Let the kernel choose the address
+    movq %rbx, %rsi      # Allocate space for all the numbers
+    movq $0b11, %rdx     # Flags for PROT_READ, PROT_WRITE
+    # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
+    movq $0x8022, %r10
+    movq $-1, %r8        # The connected file (none)
+    movq $0, %r9         # The offset (don't care)
+    syscall
+
+    # Move allocated space to %r15
+    # We don't need the file that was stored there anymore
+    movq %rax, %r15
+
+    # Move the buffer used for counting
     movq $countbuf, %r11
+
+    # At this point:
+    # %r11 = counting buffer, %r12 = count of pairs
+    # %r13 = file size, %r14 = buffer, %r15 = buffer
+
+    movq $0, %rcx
 count_start:
     xorq %r8, %r8
     movl 4(%r14, %rcx, 8), %r8d
     shrq $8, %r8
     addl $1, (%r11, %r8, 4)
     addq $1, %rcx
-    cmpq %rcx, %r10
+    cmpq %rcx, %r12
     jg count_start
 
     movq $0, %rax # Accumulator
@@ -209,27 +230,8 @@ count_sum:
     addq $1, %rcx
     cmpq $206699, %rcx
     jne count_sum
-
-    # Calculate the actual needed amount of memory
-    movq %r12, %rbx
-    shlq $2, %rbx # Count of numbers * 4 bytes
-
-    movq $9, %rax # mmap syscall
-    movq $0, %rdi # let the kernel choose the address
-    movq %rbx, %rsi # Allocate the filesize
-    movq $0b11, %rdx # Flags for PROT_READ, PROT_WRITE
-    # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
-    movq $0x8022, %r10
-    movq $-1, %r8 # The connected file (none)
-    movq $0, %r9 # The offset (don't care)
-    syscall
     
-    movq %rax, %r15
-
     movq $0, %rcx
-    movq $countbuf, %r11
-    movq %r12, %r10
-    shrq $1, %r10 # Count of pairs
     xorq %rax, %rax
     xorq %rdx, %rdx
 move_num:
@@ -240,21 +242,22 @@ move_num:
     movq %r8, -8(%r15, %rdx, 8)
     subq $1, (%r11, %rax, 4)
     addq $1, %rcx
-    cmpq %rcx, %r10
+    cmpq %rcx, %r12
     jne move_num
 
     # Allow us to write a little bit in front of the start
     movq %r13, %rbx
     addq $16, %rbx
 
-    movq $9, %rax # mmap syscall
-    movq $0, %rdi # let the kernel choose the address
-    movq %rbx, %rsi # Allocate the filesize
-    movq $0b11, %rdx # Flags for PROT_READ, PROT_WRITE
+    # Buffer for writing the ASCII to
+    movq $9, %rax        # mmap syscall
+    movq $0, %rdi        # Let the kernel choose the address
+    movq %rbx, %rsi      # Allocate the filesize
+    movq $0b11, %rdx     # Flags for PROT_READ, PROT_WRITE
     # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
     movq $0x8022, %r10
-    movq $-1, %r8 # The connected file (none)
-    movq $0, %r9 # The offset (don't care)
+    movq $-1, %r8        # The connected file (none)
+    movq $0, %r9         # The offset (don't care)
     syscall
 
     movq %rax, %r11
@@ -262,7 +265,7 @@ move_num:
     # Printing time!
 
     # We iterate backwards over the numbers
-    movq %r12, %r8 # Number counter
+    movq %r12, %r8 # Pair counter
     leaq -1(%r11, %rbx), %r9 # Output pointer
     movdqa shuffle_wide, %xmm2
     movdqa shift, %xmm3
@@ -271,12 +274,12 @@ move_num:
     movdqa conversion, %xmm6
 .p2align 4
 write_num:
-    subq $2, %r8         # We read a pair at a time 
+    subq $1, %r8         # We read a pair at a time 
     jl end_writing       # Have we written all numbers?
     # Read a pair
-    movq (%r15, %r8, 4), %xmm0 # Read a pair of numbers
-    movzbq 4(%r15, %r8, 4), %rax # Read size of x
-    movzbq (%r15, %r8, 4), %rbx # Read size of y
+    movq (%r15, %r8, 8), %xmm0 # Read a pair of numbers
+    movzbq 4(%r15, %r8, 8), %rax # Read size of x
+    movzbq (%r15, %r8, 8), %rbx # Read size of y
     # Bit shift every other digit (nibble)
     pshufb %xmm2, %xmm0
     vpsrlvd %xmm3, %xmm0, %xmm0
