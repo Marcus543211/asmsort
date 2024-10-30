@@ -4,6 +4,10 @@
 statbuf:
     .space 144
 
+# Space for the counting sort
+countbuf:
+    .space 262144 * 4
+
 # Various constants for SIMD operations.
 # Used when writing.
 # TODO: Explain these here or in the code.
@@ -78,8 +82,6 @@ _start:
     movq %r12, %r8       # The connected file
     movq $0, %r9         # The offset (just take everything)
     syscall
-
-    jmp exit
 
     # Move the address of the mmap'ed file to %r15
     movq %rax, %r15
@@ -184,9 +186,62 @@ end_parsing:
     # %r12 = count of numbers (not pairs)
     # %r13 = file size, %r14 = buffer, %r15 = mmap'ed file
 
+    # Sorting!
+    movq $0, %rcx
+    movq %r12, %r10
+    shrq $1, %r10 # Count of pairs
+    movq $countbuf, %r11
+count_start:
+    xorq %r8, %r8
+    movl 4(%r14, %rcx, 8), %r8d
+    shrq $8, %r8
+    addl $1, (%r11, %r8, 4)
+    addq $1, %rcx
+    cmpq %rcx, %r10
+    jg count_start
+
+    movq $0, %rcx
+count_sum:
+    addq $1, %rcx
+    movl (%r11, %rcx, 4), %r8d
+    movl -4(%r11, %rcx, 4), %r9d
+    addl %r8d, %r9d
+    movl %r9d, (%r11, %rcx, 4)
+    cmpq $262143, %rcx
+    jne count_sum
+
     # Calculate the actual needed amount of memory
     movq %r12, %rbx
     shlq $2, %rbx # Count of numbers * 4 bytes
+
+    movq $9, %rax # mmap syscall
+    movq $0, %rdi # let the kernel choose the address
+    movq %rbx, %rsi # Allocate the filesize
+    movq $0b11, %rdx # Flags for PROT_READ, PROT_WRITE
+    # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
+    movq $0x8022, %r10
+    movq $-1, %r8 # The connected file (none)
+    movq $0, %r9 # The offset (don't care)
+    syscall
+    
+    movq %rax, %r15
+
+    movq $0, %rcx
+    movq $countbuf, %r11
+    movq %r12, %r10
+    shrq $1, %r10 # Count of pairs
+    xorq %rax, %rax
+    xorq %rdx, %rdx
+move_num:
+    movl 4(%r14, %rcx, 8), %eax
+    shrq $8, %rax
+    movl (%r11, %rax, 4), %edx
+    movq (%r14, %rcx, 8), %r8
+    movq %r8, -8(%r15, %rdx, 8)
+    subq $1, (%r11, %rax, 4)
+    addq $1, %rcx
+    cmpq %rcx, %r10
+    jne move_num
 
     # Allow us to write a little bit in front of the start
     movq %r13, %rbx
@@ -219,9 +274,9 @@ write_num:
     subq $2, %r8         # We read a pair at a time 
     jl end_writing       # Have we written all numbers?
     # Read a pair
-    movq (%r14, %r8, 4), %xmm0 # Read a pair of numbers
-    movzbq 4(%r14, %r8, 4), %rax # Read size of x
-    movzbq (%r14, %r8, 4), %rbx # Read size of y
+    movq (%r15, %r8, 4), %xmm0 # Read a pair of numbers
+    movzbq 4(%r15, %r8, 4), %rax # Read size of x
+    movzbq (%r15, %r8, 4), %rbx # Read size of y
     # Bit shift every other digit (nibble)
     pshufb %xmm2, %xmm0
     vpsrlvd %xmm3, %xmm0, %xmm0
