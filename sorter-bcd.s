@@ -6,7 +6,8 @@ statbuf:
 
 # Space for the counting sort
 countbuf:
-    .space 262144 * 4
+    # A little more than is needed (206995)
+    .space 206700 * 4
 
 # Various constants for SIMD operations.
 # Used when writing.
@@ -200,14 +201,13 @@ count_start:
     cmpq %rcx, %r10
     jg count_start
 
+    movq $0, %rax # Accumulator
     movq $0, %rcx
 count_sum:
+    addl (%r11, %rcx, 4), %eax
+    movl %eax, (%r11, %rcx, 4)
     addq $1, %rcx
-    movl (%r11, %rcx, 4), %r8d
-    movl -4(%r11, %rcx, 4), %r9d
-    addl %r8d, %r9d
-    movl %r9d, (%r11, %rcx, 4)
-    cmpq $262143, %rcx
+    cmpq $206699, %rcx
     jne count_sum
 
     # Calculate the actual needed amount of memory
