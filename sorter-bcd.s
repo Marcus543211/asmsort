@@ -1,13 +1,17 @@
 .section .data
 
 # Buffer for a call to fstat
-statbuf:
+stat_buf:
     .space 144
 
-# Space for the counting sort
-countbuf:
-    # A little more than is needed (206995)
-    .space 206700 * 4
+# Space for the radix sort
+.p2align 4
+count_buf_high:
+    # A little more than is needed (887)
+    .space 900 * 4
+count_buf_low:
+    # A little more than is needed (154)
+    .space 160 * 4
 
 # Various constants for SIMD operations.
 # Used when writing.
@@ -66,13 +70,13 @@ _start:
     # Get file information
     movq $5, %rax        # fstat syscall
     movq %r12, %rdi      # The fd of our file
-    movq $statbuf, %rsi  # A buffer for the result
+    movq $stat_buf, %rsi  # A buffer for the result
     syscall
 
     # Extract the file size in bytes into %r13.
     # The buffer was populated by fstat.
     # The file size is a quadword at offset 48.
-    movq statbuf + 48, %r13 
+    movq stat_buf + 48, %r13 
 
     # For efficency, I mmap the file
     movq $9, %rax        # mmap syscall
@@ -101,7 +105,7 @@ _start:
     # with the size (count of digits) in the lower byte.
     # This is done for faster parsing and printing.
 
-    # TODO: Write nicer
+    # TODO: Write nicer (maybe just delete and write in report)
     # To allocate a buffer for the result, we need to know the size.
     # This can either be found exactly, e.g., by counting lines
     # or we can calculate the maximum needed space, which is faster.
@@ -168,7 +172,7 @@ end_of_number:
     shlq $8, %rax        # Shift out of the lower byte
     addq %rcx, %rax      # And save the count there
     # Save the number
-    movntil %eax, (%r14, %rdx, 4) # Non-temporal hint
+    movl %eax, (%r14, %rdx, 4) # Non-temporal hint
     addq $1, %rdx        # Increase the counter
     addq $1, %rcx        # Count the \t or \n we read
     addq %rcx, %rbx      # Move to the start of the next number
@@ -206,44 +210,67 @@ end_parsing:
     movq %rax, %r15
 
     # Move the buffer used for counting
-    movq $countbuf, %r11
+    movq $count_buf_high, %r10
+    movq $count_buf_low, %r11
 
     # At this point:
-    # %r11 = counting buffer, %r12 = count of pairs
-    # %r13 = file size, %r14 = buffer, %r15 = buffer
+    # %r10 = counting high, %r11 = counting low,
+    # %r12 = count of pairs, %r13 = file size
+    # %r14 = numbers, %r15 = buffer for sorting
 
-    movq $0, %rcx
+    # Count the numbers, iterating backwards
+    leaq -1(%r12), %rcx
 count_start:
-    xorq %r8, %r8
-    movl 4(%r14, %rcx, 8), %r8d
-    shrq $8, %r8
-    addl $1, (%r11, %r8, 4)
-    addq $1, %rcx
-    cmpq %rcx, %r12
-    jg count_start
+    movzwq 6(%r14, %rcx, 8), %rax
+    movzbq 5(%r14, %rcx, 8), %rbx
+    addl $1, (%r10, %rax, 4)
+    addl $1, (%r11, %rbx, 4)
+    subq $1, %rcx
+    jns count_start
 
+    # Calculate the running sum for the lower part
     movq $0, %rax # Accumulator
     movq $0, %rcx
-count_sum:
+count_sum1:
     addl (%r11, %rcx, 4), %eax
     movl %eax, (%r11, %rcx, 4)
     addq $1, %rcx
-    cmpq $206699, %rcx
-    jne count_sum
-    
-    movq $0, %rcx
-    xorq %rax, %rax
+    cmpq $160, %rcx
+    jl count_sum1
+ 
+    # Move the numbers based on the lower part
+    leaq -1(%r12), %rcx
     xorq %rdx, %rdx
-move_num:
-    movl 4(%r14, %rcx, 8), %eax
-    shrq $8, %rax
-    movl (%r11, %rax, 4), %edx
-    movq (%r14, %rcx, 8), %r8
-    movq %r8, -8(%r15, %rdx, 8)
-    subq $1, (%r11, %rax, 4)
+move_num1:
+    movzbq 5(%r14, %rcx, 8), %rbx
+    movq (%r14, %rcx, 8), %rax
+    movl (%r11, %rbx, 4), %edx
+    movq %rax, -8(%r15, %rdx, 8)
+    subq $1, (%r11, %rbx, 4)
+    subq $1, %rcx
+    jns move_num1
+
+    # Calculate the running sum for the higher part
+    movq $0, %rax # Accumulator
+    movq $0, %rcx
+count_sum2:
+    addl (%r10, %rcx, 4), %eax
+    movl %eax, (%r10, %rcx, 4)
     addq $1, %rcx
-    cmpq %rcx, %r12
-    jne move_num
+    cmpq $900, %rcx
+    jl count_sum2
+
+    # Move the numbers based on the higher part
+    leaq -1(%r12), %rcx
+    xorq %rdx, %rdx
+move_num2:
+    movzwq 6(%r14, %rcx, 8), %rbx
+    movq (%r14, %rcx, 8), %rax
+    movl (%r10, %rbx, 4), %edx
+    movq %rax, -8(%r15, %rdx, 8)
+    subq $1, (%r10, %rbx, 4)
+    subq $1, %rcx
+    jns move_num2
 
     # Allow us to write a little bit in front of the start
     movq %r13, %rbx
