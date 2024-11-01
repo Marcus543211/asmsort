@@ -55,68 +55,30 @@ _start:
     popq %rdi            # Pop path of program
     popq %rdi            # Pop path of file to sort
 
-    # Open the file
+    # Open the file.
     movq $2, %rax        # open syscall
                          # The path was pop'ed into %rdi
     movq $0, %rsi        # Open for reading
     syscall
 
-    # Move fd to %r12
+    # Move fd.
     movq %rax, %r12
 
-    # We want the size of the file for
-    # allocating a buffer and for mmap'ing the file.
+    # We want the size of the file for allocating a buffer
+    # and for mmap'ing the file.
+    movq %r12, %rdi
+    call getFileSize
 
-    # Get file information
-    movq $5, %rax        # fstat syscall
-    movq %r12, %rdi      # The fd of our file
-    movq $stat_buf, %rsi  # A buffer for the result
-    syscall
-
-    # Extract the file size in bytes into %r13.
-    # The buffer was populated by fstat.
-    # The file size is a quadword at offset 48.
-    movq stat_buf + 48, %r13 
-
-    # For efficency, I mmap the file
-    movq $9, %rax        # mmap syscall
-    movq $0, %rdi        # Let the kernel choose the address
-    movq %r13, %rsi      # Allocate the filesize
-    movq $1, %rdx        # Only for reading (PROT_READ)
-    movq $0x8002, %r10   # Flags: MAP_POPULATE + MAP_PRIVATE
-    movq %r12, %r8       # The connected file
-    movq $0, %r9         # The offset (just take everything)
-    syscall
-
-    # Move the address of the mmap'ed file to %r15
-    movq %rax, %r15
-
-    # Now that the file is mmap'ed, it can be closed.
-    movq $3, %rax        # close syscall
-    movq %r12, %rdi      # Our fd
-    syscall
+    # Move file size.
+    movq %rax, %r13
 
     # Allocation time!
     # We need somewhere to store the numbers after parsing.
-    # Here there is the choice between brk and mmap.
-    # I use mmap because for no particular reason.
-
     # The numbers will be stored in packed binary-coded decimal form (BCD)
     # with the size (count of digits) in the lower byte.
     # This is done for faster parsing and printing.
 
-    # TODO: Write nicer (maybe just delete and write in report)
-    # To allocate a buffer for the result, we need to know the size.
-    # This can either be found exactly, e.g., by counting lines
-    # or we can calculate the maximum needed space, which is faster.
-    # Worst case, all digits are 1 decimal.
-    # All numbers are followed by either \t or \n.
-    # Thus the max count of numbers is: file size / 2.
-    # Each number we store will take up 4 bytes.
-    # TODO: Ignoring the stored size.
-    # (5 digits taking up 1 nibble each = 20 bits, rounded up)
-    # Thus the max size is: 2 * file size
-    # Calculated here:
+    # Calculate the maximum needed amount of memory.
     movq %r13, %rbx      # Get the size of the file
     shl $1, %rbx         # Multiply by 2
 
@@ -131,34 +93,99 @@ _start:
     movq $0, %r9         # The offset (don't care)
     syscall
 
-    # Move the address of the allocated space to %r14
+    # Move the address of the allocated space.
     movq %rax, %r14
 
     # Parsing time!
-    # We now have the file and a buffer for the result in memory.
-    # Next step is converting the numbers from ASCII to packed BCD.
+    movq %r12, %rdi
+    movq %r13, %rsi
+    movq %r14, %rdx
+    call parseFile
 
-    # At this point:
-    # %r13 = file size, %r14 = buffer, %r15 = mmap'ed file
+    # Move the count of coordinates.
+    movq %rax, %r15
+
+    # Sorting!
+    movq %r14, %rdi
+    movq %r15, %rsi
+    call radixSort
+
+    # Printing time!
+    movq %rax, %rdi
+    movq %r15, %rsi
+    movq %r13, %rdx
+    call print
+
+exit:
+    # That's all folks!
+    movq $60, %rax       # exit syscall
+    movq $0, %rdi        # All went good
+    syscall
+
+
+# int getFileSize(int fd)
+#     Returns the size in bytes of the file.
+.type getFileSize, @function
+getFileSize:
+    # Get file information.
+    movq $5, %rax        # fstat syscall
+                         # The fd of our file is already in %rdi
+    movq $stat_buf, %rsi # A buffer for the result
+    syscall
+
+    # Extract the file size into %rax.
+    # The buffer was populated by fstat.
+    # The file size is a quadword at offset 48.
+    movq stat_buf + 48, %rax
+    ret
+
+
+# int parseFile(int fd, int size, int* result)
+#     Parses the coordinates in the file.
+#     Returns the number of coordinates in the file.
+#     The parsed numbers are 32-bit and stored in packed BCD with
+#     their least significant byte being the count of digits in the number.
+#     'fd': file descriptor of the file to read.
+#     'size': the size of the file in bytes.
+#     'result': the address to store the numbers to.
+.type parseFile, @function
+parseFile:
+    pushq %rsi           # Save the file size
+    pushq %rdx           # Save the result buffer
+
+    # For efficency, I mmap the file.
+    # (The arguments are a little out of order)
+    movq $9, %rax        # mmap syscall
+    movq %rdi, %r8       # The connected file
+    movq $0, %rdi        # Let the kernel choose the address
+                         # Allocate the filesize (already in %rsi)
+    movq $1, %rdx        # Only for reading (PROT_READ)
+    movq $0x8002, %r10   # Flags: MAP_POPULATE + MAP_PRIVATE
+    movq $0, %r9         # The offset (just take everything)
+    syscall
+
+    movq %rax, %r9       # Move the address of the mmap'ed file
+    popq %r11            # Restore the result buffer
+    popq %r10            # Restore the file size
 
     # The loop is unrolled for performance.
     # This macro helps bring down the repetition.
 .macro parse_digit
-    movzbq (%rbx, %rcx), %r8 # Read the next byte (zero extending)
-    subq $48, %r8        # Convert the ASCII digit to its value
-    js end_of_number     # Jump if sign is negative (\n or \t)
+    movzbq (%rsi, %rcx), %rdi # Read the next byte (zero extending)
+    subq $48, %rdi       # Convert the ASCII digit to its value
+    js parse_end_of_number # Jump if sign is negative (\n or \t)
     addq $1, %rcx        # Increase counter
     shlq $4, %rax        # Move 4 bits for the new digit
-    addq %r8, %rax       # Add the new digit
+    addq %rdi, %rax       # Add the new digit
 .endm
 
-    movq %r15, %rbx      # Start of number in file
+    movq %r9, %rsi       # Start of the current number
     movq $0, %rcx        # Digits parsed
-    leaq (%r15, %r13), %rdi # End of file
+    leaq (%r9, %r10), %r8 # End of file
     movq $0, %rdx        # Result counter
 .p2align 4
-start_of_number:
-    movzbq (%rbx), %rax  # First digit into %rax, clearing it
+parse_start_of_number:
+    movzbq (%rsi), %rax  # First digit into %rax, clearing it
     movq $1, %rcx        # Reset digit counter to 1
     subq $48, %rax       # Convert from ASCII to value
     parse_digit          # 2nd digit
@@ -167,64 +194,68 @@ start_of_number:
     parse_digit          # 5th digit
     # We can safely assume the next character is \t or \n since
     # no number is longer than 5 digits (max 32767).
-end_of_number:
+parse_end_of_number:
     # Save the count of digits in the lower byte
     shlq $8, %rax        # Shift out of the lower byte
     addq %rcx, %rax      # And save the count there
     # Save the number
-    movl %eax, (%r14, %rdx, 4) # Non-temporal hint
+    movl %eax, (%r11, %rdx, 4)
     addq $1, %rdx        # Increase the counter
     addq $1, %rcx        # Count the \t or \n we read
-    addq %rcx, %rbx      # Move to the start of the next number
+    addq %rcx, %rsi      # Move to the start of the next number
     # Have we read the entire file?
     # We only check here since a well formatted file will ends with \n.
-    cmpq %rbx, %rdi
+    cmpq %rsi, %r8
     # If we aren't done, jump back to the start.
     # We just read a tab or newline so the next character must be a digit.
-    jg start_of_number
-end_parsing:
+    jg parse_start_of_number
 
-    # Calculate the count of pairs
-    movq %rdx, %r12      # Count of numbers
-    shrq $1, %r12        # Divided by 2
+    # Calculate the count of coordinates.
+    movq %rdx, %rax      # Count of numbers
+    shrq $1, %rax        # Divided by 2
+    ret
 
-    # Sorting!
 
-    # For counting sort we need a buffer to write into
-    # Calculate the actual needed amount of memory
-    movq %r12, %rbx      # Move count of pairs
-    shlq $3, %rbx        # Count of pairs * 8 bytes
+
+# int* radixSort(int* coordinates, int count)
+#     Sorts the numbers using radix sort.
+#     Returns the address of the sorted coordinates.
+#     'numbers': the address of the coordinates to sort.
+#     'count': the count of coordinates to sort.
+.type radixSort, @function
+radixSort:
+    pushq %rdi           # Store the address of the numbers
+    pushq %rsi           # Store the count
+
+    # For radix sort we need a buffer to write into.
+    # Calculate the needed amount of memory.
+    shlq $3, %rsi        # Count of coordinates * 8 bytes
 
     movq $9, %rax        # mmap syscall
     movq $0, %rdi        # Let the kernel choose the address
-    movq %rbx, %rsi      # Allocate space for all the numbers
-    movq $0b11, %rdx     # Flags for PROT_READ, PROT_WRITE
+                         # Allocate space for all the numbers (already in %rsi)
+    movq $0b11, %rdx     # Read and write
     # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
     movq $0x8022, %r10
     movq $-1, %r8        # The connected file (none)
     movq $0, %r9         # The offset (don't care)
     syscall
 
-    # Move allocated space to %r15
-    # We don't need the file that was stored there anymore
-    movq %rax, %r15
+    popq %r9             # Restore count
+    popq %rsi            # Restore address of coordinates
+    movq %rax, %rdi      # Move address of allocated space
 
-    # Move the buffer used for counting
+    # Move the buffers used for counting
     movq $count_buf_high, %r10
     movq $count_buf_low, %r11
 
-    # At this point:
-    # %r10 = counting high, %r11 = counting low,
-    # %r12 = count of pairs, %r13 = file size
-    # %r14 = numbers, %r15 = buffer for sorting
-
     # Count the numbers, iterating backwards
-    leaq -1(%r12), %rcx
+    leaq -1(%r9), %rcx
 count_start:
-    movzwq 6(%r14, %rcx, 8), %rax
-    movzbq 5(%r14, %rcx, 8), %rbx
+    movzwq 6(%rsi, %rcx, 8), %rax
+    movzbq 5(%rsi, %rcx, 8), %rdx
     addl $1, (%r10, %rax, 4)
-    addl $1, (%r11, %rbx, 4)
+    addl $1, (%r11, %rdx, 4)
     subq $1, %rcx
     jns count_start
 
@@ -239,14 +270,13 @@ count_sum1:
     jl count_sum1
  
     # Move the numbers based on the lower part
-    leaq -1(%r12), %rcx
-    xorq %rdx, %rdx
+    leaq -1(%r9), %rcx
 move_num1:
-    movzbq 5(%r14, %rcx, 8), %rbx
-    movq (%r14, %rcx, 8), %rax
-    movl (%r11, %rbx, 4), %edx
-    movq %rax, -8(%r15, %rdx, 8)
-    subq $1, (%r11, %rbx, 4)
+    movzbq 5(%rsi, %rcx, 8), %rdx
+    movq (%rsi, %rcx, 8), %rax
+    subq $1, (%r11, %rdx, 4)
+    movl (%r11, %rdx, 4), %edx
+    movq %rax, (%rdi, %rdx, 8)
     subq $1, %rcx
     jns move_num1
 
@@ -261,25 +291,36 @@ count_sum2:
     jl count_sum2
 
     # Move the numbers based on the higher part
-    leaq -1(%r12), %rcx
-    xorq %rdx, %rdx
+    leaq -1(%r9), %rcx
 move_num2:
-    movzwq 6(%r14, %rcx, 8), %rbx
-    movq (%r14, %rcx, 8), %rax
-    movl (%r10, %rbx, 4), %edx
-    movq %rax, -8(%r15, %rdx, 8)
-    subq $1, (%r10, %rbx, 4)
+    movzwq 6(%rdi, %rcx, 8), %rdx
+    movq (%rdi, %rcx, 8), %rax
+    subq $1, (%r10, %rdx, 4)
+    movl (%r10, %rdx, 4), %edx
+    movq %rax, (%rsi, %rdx, 8)
     subq $1, %rcx
     jns move_num2
 
-    # Allow us to write a little bit in front of the start
-    movq %r13, %rbx
-    addq $16, %rbx
+    movq %rsi, %rax
+    ret
 
-    # Buffer for writing the ASCII to
+
+# void print(int* coordinates, int count, int size)
+#     Print the coordinates.
+#     'coordinates': the address of the coordinates.
+#     'count': the count of coordinates.
+#     'size': the size of initial file.
+.type print, @function
+print:
+    pushq %rdi           # Save the address
+    pushq %rsi           # Save the count
+
+    # Buffer for writing the ASCII to.
     movq $9, %rax        # mmap syscall
     movq $0, %rdi        # Let the kernel choose the address
-    movq %rbx, %rsi      # Allocate the filesize
+    movq %rdx, %rsi      # Allocate the filesize
+    addq $16, %rsi       # plus a little bit so we can read ahead
+    pushq %rsi           # and save it
     movq $0b11, %rdx     # Flags for PROT_READ, PROT_WRITE
     # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
     movq $0x8022, %r10
@@ -287,13 +328,14 @@ move_num2:
     movq $0, %r9         # The offset (don't care)
     syscall
 
-    movq %rax, %r11
+    # Move the allocated space
+    movq %rax, %rdi
 
-    # Printing time!
-
-    # We iterate backwards over the numbers
-    movq %r12, %r8 # Pair counter
-    leaq -1(%r11, %rbx), %r9 # Output pointer
+    # We iterate backwards over the numbers,
+    popq %rdx            # The allocated size
+    popq %rcx            # Restore count for counting
+    popq %rsi            # The coordinates
+    leaq -1(%rdi, %rdx), %r9 # Output pointer
     movdqa shuffle_wide, %xmm2
     movdqa shift, %xmm3
     movdqa select, %xmm4
@@ -301,12 +343,12 @@ move_num2:
     movdqa conversion, %xmm6
 .p2align 4
 write_num:
-    subq $1, %r8         # We read a pair at a time 
+    subq $1, %rcx        # We read a pair at a time 
     jl end_writing       # Have we written all numbers?
     # Read a pair
-    movq (%r15, %r8, 8), %xmm0 # Read a pair of numbers
-    movzbq 4(%r15, %r8, 8), %rax # Read size of x
-    movzbq (%r15, %r8, 8), %rbx # Read size of y
+    movq (%rsi, %rcx, 8), %xmm0 # Read a pair of numbers
+    movzbq 4(%rsi, %rcx, 8), %rax # Read size of x
+    movzbq (%rsi, %rcx, 8), %rbx # Read size of y
     # Bit shift every other digit (nibble)
     pshufb %xmm2, %xmm0
     vpsrlvd %xmm3, %xmm0, %xmm0
@@ -329,18 +371,12 @@ write_num:
     # Repeat
     jmp write_num
 end_writing:
-    addq $1, %r9         # I don't know
+    addq $1, %r9         # Don't know
 
-print:
     movq $1, %rax        # write syscall
     movq $1, %rdi        # To stdout
     movq %r9, %rsi       # The buffer we've written to
     movq %r13, %rdx      # Which must have the same length as the file
     syscall
-
-exit:
-    # That's all folks!
-    movq $60, %rax       # exit syscall
-    movq $0, %rdi        # All went good
-    syscall
+    ret
 
