@@ -1,56 +1,8 @@
-.section .data
-
-# Buffer for a call to fstat
-stat_buf:
-    .space 144
-
-# Space for the radix sort
-.p2align 4
-count_buf_high:
-    # A little more than is needed (887)
-    .space 900 * 4
-count_buf_low:
-    # A little more than is needed (154)
-    .space 160 * 4
-
-# Various constants for SIMD operations.
-# Used when writing.
-# TODO: Explain these here or in the code.
-.p2align 4
-shuffle_wide:
-    .long 0xFF070605
-    .long 0xFFFF0605
-    .long 0xFF030201
-    .long 0xFFFF0201
-
-shift:
-    .long 0x00000000
-    .long 0x00000004
-    .long 0x00000000
-    .long 0x00000004
-
-select:
-    .long 0x0F0F0F0F
-    .long 0x0F0F0F0F
-    .long 0x0F0F0F0F
-    .long 0x0F0F0F0F
-
-shuffle_short:
-    .long 0x0502FFFF
-    .long 0xFF000401
-    .long 0x0D0AFFFF
-    .long 0xFF080C09
-
-conversion:
-    .long 0x30300000
-    .long 0x0A303030
-    .long 0x30300000
-    .long 0x09303030
-
 .section .text
 .globl _start
 _start:
-    # TODO: Handle errors, check for SIMD features.
+    # TODO: Handle errors, check for SIMD features, close things.
+
     popq %rdi            # Pop no. args
     popq %rdi            # Pop path of program
     popq %rdi            # Pop path of file to sort
@@ -61,43 +13,30 @@ _start:
     movq $0, %rsi        # Open for reading
     syscall
 
-    # Move fd.
-    movq %rax, %r12
+    movq %rax, %r12      # Move the fd
 
     # We want the size of the file for allocating a buffer
     # and for mmap'ing the file.
     movq %r12, %rdi
     call getFileSize
-
-    # Move file size.
-    movq %rax, %r13
-
-    # Allocation time!
-    # We need somewhere to store the numbers after parsing.
-    # The numbers will be stored in packed binary-coded decimal form (BCD)
-    # with the size (count of digits) in the lower byte.
-    # This is done for faster parsing and printing.
+    
+    movq %rax, %r13      # Move the file size
 
     # Calculate the maximum needed amount of memory.
-    movq %r13, %rbx      # Get the size of the file
-    shl $1, %rbx         # Multiply by 2
+    movq %r13, %rdi      # Get the size of the file
+    shl $1, %rdi         # Multiply by 2
+    movq $0, %rsi        # No extra flags
+    call alloc           # And allocate
 
-    # Allocate space
-    movq %rbx, %rdi
-    movq $0, %rsi
-    call alloc
-
-    # Move the address of the allocated space.
-    movq %rax, %r14
+    movq %rax, %r14      # Move the address of the allocated space
 
     # Parsing time!
     movq %r12, %rdi
     movq %r13, %rsi
     movq %r14, %rdx
     call parseFile
-
-    # Move the count of coordinates.
-    movq %rax, %r15
+    
+    movq %rax, %r15      # Move the count of coordinates
 
     # Sorting!
     movq %r14, %rdi
@@ -110,7 +49,6 @@ _start:
     movq %r13, %rdx
     call print
 
-exit:
     # That's all folks!
     movq $60, %rax       # exit syscall
     movq $0, %rdi        # All went good
@@ -118,7 +56,12 @@ exit:
 
 
 # int getFileSize(int fd)
-#     Returns the size in bytes of the file.
+#     Return the size in bytes of the file.
+#     'fd': file descriptor of the file to get the size of.
+.section .data
+stat_buf: .space 144
+
+.section .text
 .type getFileSize, @function
 getFileSize:
     # Get file information.
@@ -135,10 +78,11 @@ getFileSize:
 
 
 # int parseFile(int fd, int size, int* result)
-#     Parses the coordinates in the file.
-#     Returns the number of coordinates in the file.
+#     Parse the coordinates in the file.
+#     Return the number of coordinates in the file.
 #     The parsed numbers are 32-bit and stored in packed BCD with
 #     their least significant byte being the count of digits in the number.
+#     This is done for faster parsing and printing.
 #     'fd': file descriptor of the file to read.
 #     'size': the size of the file in bytes.
 #     'result': the address to store the numbers to.
@@ -170,7 +114,7 @@ parseFile:
     js parse_end_of_number # Jump if sign is negative (\n or \t)
     addq $1, %rcx        # Increase counter
     shlq $4, %rax        # Move 4 bits for the new digit
-    addq %rdi, %rax       # Add the new digit
+    addq %rdi, %rax      # Add the new digit
 .endm
 
     movq %r9, %rsi       # Start of the current number
@@ -215,8 +159,20 @@ parse_end_of_number:
 #     Returns the address of the sorted coordinates.
 #     'numbers': the address of the coordinates to sort.
 #     'count': the count of coordinates to sort.
+.section .data
+# Space for radix sort.
+.p2align 4
+# A little more than is needed (887)
+count_buf_higher: .space 900 * 4
+# A little more than is needed (154)
+count_buf_lower: .space 160 * 4
+
+.section .text
 .type radixSort, @function
 radixSort:
+    # It might be slightly wrong to call this radix sort
+    # as the radix is not constant. However, the procedure is the same.
+
     pushq %rdi           # Store the address of the numbers
     pushq %rsi           # Store the count
 
@@ -224,8 +180,9 @@ radixSort:
     # Calculate the needed amount of memory.
     shlq $3, %rsi        # Count of coordinates * 8 bytes
 
-    movq %rsi, %rdi
-    movq $0x8000, %rsi
+    # Allocate memory
+    movq %rsi, %rdi      # Needed space
+    movq $0x8000, %rsi   # Flag: MAP_POPULATE (performance improvement)
     call alloc
 
     popq %r9             # Restore count
@@ -233,61 +190,54 @@ radixSort:
     movq %rax, %rdi      # Move address of allocated space
 
     # Move the buffers used for counting
-    movq $count_buf_high, %r10
-    movq $count_buf_low, %r11
+    movq $count_buf_higher, %r10
+    movq $count_buf_lower, %r11
 
     # Count the numbers, iterating backwards
-    leaq -1(%r9), %rcx
-count_start:
-    movzwq 6(%rsi, %rcx, 8), %rax
-    movzbq 5(%rsi, %rcx, 8), %rdx
-    addl $1, (%r10, %rax, 4)
+    leaq -1(%r9), %rcx   # Counter
+radixSort_count:
+    movzwq 6(%rsi, %rcx, 8), %rax # Extract "higher" word of y
+    movzbq 5(%rsi, %rcx, 8), %rdx # Extract "lower" byte of y
+    addl $1, (%r10, %rax, 4) # Count both
     addl $1, (%r11, %rdx, 4)
-    subq $1, %rcx
-    jns count_start
+    subq $1, %rcx        # Move on to next y
+    jns radixSort_count  # Continue while the count is positive
 
-    # Calculate the running sum for the lower part
-    movq $0, %rax # Accumulator
-    movq $0, %rcx
-count_sum1:
-    addl (%r11, %rcx, 4), %eax
-    movl %eax, (%r11, %rcx, 4)
-    addq $1, %rcx
-    cmpq $160, %rcx
-    jl count_sum1
- 
-    # Move the numbers based on the lower part
-    leaq -1(%r9), %rcx
-move_num1:
-    movzbq 5(%rsi, %rcx, 8), %rdx
-    movq (%rsi, %rcx, 8), %rax
-    subq $1, (%r11, %rdx, 4)
-    movl (%r11, %rdx, 4), %edx
-    movq %rax, (%rdi, %rdx, 8)
-    subq $1, %rcx
-    jns move_num1
+    # Macro for calculating the running sum of the counts.
+.macro running_sum label buf count
+    movq $0, %rax        # Accumulator
+    movq $0, %rcx        # Counter
+\label :
+    addl (\buf, %rcx, 4), %eax # Add current number to total
+    movl %eax, (\buf, %rcx, 4) # Move total back
+    addq $1, %rcx        # Move to next number
+    cmpq $\count, %rcx   # Check if were done
+    jl \label
+.endm
 
-    # Calculate the running sum for the higher part
-    movq $0, %rax # Accumulator
-    movq $0, %rcx
-count_sum2:
-    addl (%r10, %rcx, 4), %eax
-    movl %eax, (%r10, %rcx, 4)
-    addq $1, %rcx
-    cmpq $900, %rcx
-    jl count_sum2
+    # Macro for moving based on a counts.
+.macro move label from to counts smov offset
+    # Move the coordinates iterating backwards.
+    leaq -1(%r9), %rcx   # Index of last element
+\label :
+    \smov \offset(\from, %rcx, 8), %rdx # Get part to sort by
+    movq (\from, %rcx, 8), %rax   # Get the full coordinate
+    subq $1, (\counts, %rdx, 4)   # Subtract one from the counts
+    movl (\counts, %rdx, 4), %edx # Get the index to place at
+    movq %rax, (\to, %rdx, 8)     # Place at new index
+    subq $1, %rcx        # Move to next coordinate
+    jns \label           # Continue while positive
+.endm
 
-    # Move the numbers based on the higher part
-    leaq -1(%r9), %rcx
-move_num2:
-    movzwq 6(%rdi, %rcx, 8), %rdx
-    movq (%rdi, %rcx, 8), %rax
-    subq $1, (%r10, %rdx, 4)
-    movl (%r10, %rdx, 4), %edx
-    movq %rax, (%rsi, %rdx, 8)
-    subq $1, %rcx
-    jns move_num2
+    # Sort based on lower part
+    running_sum radixSort_sum_lower %r11 160
+    move radixSort_move_lower %rsi %rdi %r11 movzbq 5
 
+    # Sort based on higher part
+    running_sum radixSort_sum_higher %r10 900
+    move radixSort_move_higher %rdi %rsi %r10 movzwq 6
+
+    # Move the address to the sorted coordinates.
     movq %rsi, %rax
     ret
 
@@ -297,6 +247,41 @@ move_num2:
 #     'coordinates': the address of the coordinates.
 #     'count': the count of coordinates.
 #     'size': the size of initial file.
+.section .data
+# Various constants for SIMD operations.
+# TODO: Explain these here or in the code.
+.p2align 4
+shuffle_wide:
+    .long 0xFF070605
+    .long 0xFFFF0605
+    .long 0xFF030201
+    .long 0xFFFF0201
+
+shift:
+    .long 0x00000000
+    .long 0x00000004
+    .long 0x00000000
+    .long 0x00000004
+
+select:
+    .long 0x0F0F0F0F
+    .long 0x0F0F0F0F
+    .long 0x0F0F0F0F
+    .long 0x0F0F0F0F
+
+shuffle_short:
+    .long 0x0502FFFF
+    .long 0xFF000401
+    .long 0x0D0AFFFF
+    .long 0xFF080C09
+
+conversion:
+    .long 0x30300000
+    .long 0x0A303030
+    .long 0x30300000
+    .long 0x09303030
+
+.section .text
 .type print, @function
 print:
     pushq %rdi           # Save the address
@@ -330,11 +315,9 @@ print_loop:
     movq (%rsi, %rcx, 8), %xmm0 # Read a pair of numbers
     movzbq 4(%rsi, %rcx, 8), %rax # Read size of x
     movzbq (%rsi, %rcx, 8), %rbx # Read size of y
-    # Bit shift every other digit (nibble)
-    pshufb %xmm2, %xmm0
-    vpsrlvd %xmm3, %xmm0, %xmm0
-    # Clear the "upper nibbles"
-    pand %xmm4, %xmm0
+    pshufb %xmm2, %xmm0         # Duplicate the numbers without counts
+    vpsrlvd %xmm3, %xmm0, %xmm0 # Bit shift one version by 4
+    pand %xmm4, %xmm0           # Clear the upper half of all bytes
     # Move everything back, so y is in the lower dword and x in the upper.
     # Each digit will fill a byte.
     # And at the end of both x and y there will be space for \t or \n.
