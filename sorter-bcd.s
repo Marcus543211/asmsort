@@ -82,16 +82,10 @@ _start:
     movq %r13, %rbx      # Get the size of the file
     shl $1, %rbx         # Multiply by 2
 
-    # Allocate space with mmap
-    movq $9, %rax        # mmap syscall
-    movq $0, %rdi        # Let the kernel choose the address again
-    movq %rbx, %rsi      # Allocate the maximum needed space
-    movq $0b11, %rdx     # Read and write (PROT_READ + PROT_WRITE)
-    # Flags: MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
-    movq $0x22, %r10
-    movq $-1, %r8        # The connected file (none)
-    movq $0, %r9         # The offset (don't care)
-    syscall
+    # Allocate space
+    movq %rbx, %rdi
+    movq $0, %rsi
+    call alloc
 
     # Move the address of the allocated space.
     movq %rax, %r14
@@ -216,7 +210,6 @@ parse_end_of_number:
     ret
 
 
-
 # int* radixSort(int* coordinates, int count)
 #     Sorts the numbers using radix sort.
 #     Returns the address of the sorted coordinates.
@@ -231,15 +224,9 @@ radixSort:
     # Calculate the needed amount of memory.
     shlq $3, %rsi        # Count of coordinates * 8 bytes
 
-    movq $9, %rax        # mmap syscall
-    movq $0, %rdi        # Let the kernel choose the address
-                         # Allocate space for all the numbers (already in %rsi)
-    movq $0b11, %rdx     # Read and write
-    # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
-    movq $0x8022, %r10
-    movq $-1, %r8        # The connected file (none)
-    movq $0, %r9         # The offset (don't care)
-    syscall
+    movq %rsi, %rdi
+    movq $0x8000, %rsi
+    call alloc
 
     popq %r9             # Restore count
     popq %rsi            # Restore address of coordinates
@@ -314,19 +301,13 @@ move_num2:
 print:
     pushq %rdi           # Save the address
     pushq %rsi           # Save the count
+    addq $16, %rdx       # We will be allocating a little extra
+    pushq %rdx           # Save the allocated size
 
     # Buffer for writing the ASCII to.
-    movq $9, %rax        # mmap syscall
-    movq $0, %rdi        # Let the kernel choose the address
-    movq %rdx, %rsi      # Allocate the filesize
-    addq $16, %rsi       # plus a little bit so we can read ahead
-    pushq %rsi           # and save it
-    movq $0b11, %rdx     # Flags for PROT_READ, PROT_WRITE
-    # MAP_POPULATE + MAP_PRIVATE + MAP_ANONYMOUS (no file, just memory)
-    movq $0x8022, %r10
-    movq $-1, %r8        # The connected file (none)
-    movq $0, %r9         # The offset (don't care)
-    syscall
+    movq %rdx, %rdi
+    movq $0x8000, %rsi
+    call alloc
 
     # Move the allocated space
     movq %rax, %rdi
@@ -342,9 +323,9 @@ print:
     movdqa shuffle_short, %xmm5
     movdqa conversion, %xmm6
 .p2align 4
-write_num:
+print_loop:
     subq $1, %rcx        # We read a pair at a time 
-    jl end_writing       # Have we written all numbers?
+    jl print_loop_end    # Have we written all numbers?
     # Read a pair
     movq (%rsi, %rcx, 8), %xmm0 # Read a pair of numbers
     movzbq 4(%rsi, %rcx, 8), %rax # Read size of x
@@ -369,14 +350,38 @@ write_num:
     subq %rbx, %r9       # Subtract x's size.
     subq $2, %r9         # Count \t and \n
     # Repeat
-    jmp write_num
-end_writing:
+    jmp print_loop
+print_loop_end:
     addq $1, %r9         # Don't know
 
     movq $1, %rax        # write syscall
     movq $1, %rdi        # To stdout
     movq %r9, %rsi       # The buffer we've written to
     movq %r13, %rdx      # Which must have the same length as the file
+    syscall
+    ret
+
+
+# int* alloc(int size, int flags)
+#     Allocates memory using mmap.
+#     Returns the address of the allocated memory.
+#     'size': how much memory to allocate in bytes.
+#     'flags': additional flags to pass to mmap.
+.type alloc, @function
+alloc:
+    # Move the arguments before their overwritten
+    movq $0x22, %r10     # Flags: MAP_PRIVATE + MAP_ANONYMOUS
+    orq %rsi, %r10       # Add additional flags
+    movq %rdi, %rsi      # Space to allocate
+
+    # Allocate space with mmap
+    movq $9, %rax        # mmap syscall
+    movq $0, %rdi        # Let the kernel choose the address again
+    # %rsi, space to allocate
+    movq $0b11, %rdx     # Read and write (PROT_READ + PROT_WRITE)
+    # %r10, flags
+    movq $-1, %r8        # The connected file (none)
+    movq $0, %r9         # The offset (don't care)
     syscall
     ret
 
