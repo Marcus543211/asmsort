@@ -22,6 +22,11 @@ _start:
     
     movq %rax, %r13      # Move the file size
 
+    # The rest of the program assumes the file is not empty
+    # so we exit here if it is.
+    cmpq $0, %r13
+    je exit
+
     # Calculate the maximum needed amount of memory.
     movq %r13, %rdi      # Get the size of the file
     shl $1, %rdi         # Multiply by 2
@@ -49,6 +54,7 @@ _start:
     movq %r13, %rdx
     call print
 
+exit:
     # That's all folks!
     movq $60, %rax       # exit syscall
     movq $0, %rdi        # All went good
