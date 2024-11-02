@@ -106,17 +106,6 @@ parseFile:
     popq %r11            # Restore the result buffer
     popq %r10            # Restore the file size
 
-    # The loop is unrolled for performance.
-    # This macro helps bring down the repetition.
-.macro parse_digit
-    movzbq (%rsi, %rcx), %rdi # Read the next byte (zero extending)
-    subq $48, %rdi       # Convert the ASCII digit to its value
-    js parse_end_of_number # Jump if sign is negative (\n or \t)
-    addq $1, %rcx        # Increase counter
-    shlq $4, %rax        # Move 4 bits for the new digit
-    addq %rdi, %rax      # Add the new digit
-.endm
-
     movq %r9, %rsi       # Start of the current number
     movq $0, %rcx        # Digits parsed
     leaq (%r9, %r10), %r8 # End of file
@@ -126,10 +115,16 @@ parse_start_of_number:
     movzbq (%rsi), %rax  # First digit into %rax, clearing it
     movq $1, %rcx        # Reset digit counter to 1
     subq $48, %rax       # Convert from ASCII to value
-    parse_digit          # 2nd digit
-    parse_digit          # 3rd digit
-    parse_digit          # 4th digit
-    parse_digit          # 5th digit
+    # Parse up to 4 digits more.
+    # The loop is unrolled for performance.
+.rept 4
+    movzbq (%rsi, %rcx), %rdi # Read the next byte (zero extending)
+    subq $48, %rdi       # Convert the ASCII digit to its value
+    js parse_end_of_number # Jump if sign is negative (\n or \t)
+    addq $1, %rcx        # Increase counter
+    shlq $4, %rax        # Move 4 bits for the new digit
+    addq %rdi, %rax      # Add the new digit
+.endr
     # We can safely assume the next character is \t or \n since
     # no number is longer than 5 digits (max 32767).
 parse_end_of_number:
